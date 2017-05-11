@@ -30,27 +30,31 @@ float angularhigh = 0.0;
   NODES
 *************************************************************/
 ros::NodeHandle twist_nh;
+geometry_msgs::Twist debugtwist;
+ros::Publisher twistDebug("/turtledebug/cmd_vel", &debugtwist);
 
 
 void twist_CB(const geometry_msgs::Twist& twistmsg) {
 
   //Serial.println(twistmsg.linear.x);
-  roombaDrive(R_DRIVE_DIRECT, map(twistmsg.linear.x, -2, 2, -200, 200), map(twistmsg.angular.z, -2, 2, -1000, 1000));
+  roombaDrive(R_DRIVE, twistmsg.linear.x, twistmsg.angular.z);
 }
 
 void hexSplitForRoomba(int num, int& a1, int& a2) {
-   a1 = (num >> 8) & 11111111;
-   a2 = (num & 255);
+  num = num & 0xFFFF;
+  a1 = (num >> 8) & 0xFF;
+  a2 = (num & 0xFF);
 }
 
-void velconfig(int vel, int& a1, int& a2) {
-  if (vel < 0) {
-    vel = vel & 255;
-  }
-  hexSplitForRoomba(vel, a1, a2);
-}
+//Not needed. Computer already in twos complement
+//void velconfig(int vel, int& a1, int& a2) {
+//  if (vel < 0) {
+//    vel = vel & 255;
+//  }
+//  hexSplitForRoomba(vel, a1, a2);
+//}
 
-void roombaDrive(int op_code, int vel, int rad) {
+void roombaDrive(int op_code, int lin, int ang) {
   //vel is in mm/s
   //rad positive is left turn(CCW), negative is right(CW)
   int b1 = 0;
@@ -59,17 +63,40 @@ void roombaDrive(int op_code, int vel, int rad) {
   int b4 = 0;
   flash();
 
+  int vel = map(lin, -1, 1, -200, 200);
+  int rad = map(ang, -1, 1, -200, 200);
+
   int velright = vel;
   int velleft = vel;
-  if ( rad != 0 ) { //left CCW R>L
-    velright += map(rad, -1, 1, -20, 20);
-    velleft -= map(rad, -1, 1, -20, 20);
+//  if ( rad != 0 && lin == 0) { //left CCW R>L
+//    velright += map(ang, -1, 1, -20, 20);
+//    velleft -= map(ang, -1, 1, -20, 20);
+//  }
+//  else if ( rad > 0 && lin != 0 ) {
+//    velright += map(ang, -1, 1, 0, 200);
+//  }
+//  else if ( rad < 0 && lin != 0 ) {
+//    velleft += map(ang, -1, 1, 0, 200);
+//  }
+
+  //debug----
+  debugtwist.linear.x = vel;
+  debugtwist.angular.z = rad;
+  twistDebug.publish(&debugtwist);
+  //debug----
+  
+  hexSplitForRoomba(vel, b1, b2);
+  hexSplitForRoomba(rad, b3, b4);
+
+  if (lin == 0 && rad != 0) {
+    op_code = R_DRIVE_DIRECT;
+    velright += map(ang, -1, 1, -100, 100);
+    velleft -= map(ang, -1, 1, -100, 100);
+    hexSplitForRoomba(velright, b1, b2);
+    hexSplitForRoomba(velleft, b3, b4);
   }
 
-  velconfig(velright, b1, b2);
-  velconfig(velleft, b3, b4);
-
-  if (vel == 0 && rad == 0) {
+  if (lin == 0 && ang == 0) {
     b1 = b2 = b3 = b4 = 0x00;
   }
 
@@ -106,6 +133,7 @@ void setup() { // will be triggered when robot is powered on
   // start USB serial port
   twist_nh.initNode();
   twist_nh.subscribe(twistsub);
+  twist_nh.advertise(twistDebug);
   //twist_nh.getHardware()->setBaud(115200);
 
   //Serial.println("Initialize complete");
@@ -152,13 +180,13 @@ void loop() {
     digitalWrite(ledPin, HIGH);
     delay(500);
     fullmode = 1;
-    //Serial.flush();
+    Serial.flush();
     //Serial.begin(9600);
   }
 
   if (fullmode == 1) {
     //spin other nodes here
     twist_nh.spinOnce();
-    delay(50);
+    delay(20);
   }
 }
