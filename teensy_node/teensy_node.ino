@@ -1,6 +1,7 @@
 #include <ros.h>
 #include <std_msgs/String.h>
 #include <std_msgs/Empty.h>
+#include <std_msgs/Int32.h>
 #include <geometry_msgs/Twist.h>
 
 #define buttonPin 2
@@ -16,9 +17,16 @@
 #define R_MODE_FULL 0x84 //132
 #define R_MOTOR     0x8A //138
 
+// Roomba drive methods
 #define R_DRIVE        0x89 //137 vel+rad
 #define R_DRIVE_DIRECT 0x91 //145 Rvel+Rvel
 #define R_DRIVE_PWM    0x92 //146 RPWM+LPWM
+
+//Roomba packet ID's
+#define left_encoder_packet_ID 43
+#define right_encoder_packet_ID 44
+
+#define delay_time  20
 
 bool fullmode = 0;
 float linearlow = 0.0;
@@ -33,6 +41,11 @@ ros::NodeHandle twist_nh;
 geometry_msgs::Twist debugtwist;
 ros::Publisher twistDebug("/turtledebug/cmd_vel", &debugtwist);
 
+std_msgs::Int32 leftEncod;
+std_msgs::Int32 rightEncod;
+ros::Publisher leftEncoderPub("/R_left_encode", &leftEncod);
+ros::Publisher rightEncoderPub("/R_right_encode", &rightEncod);
+
 
 void twist_CB(const geometry_msgs::Twist& twistmsg) {
 
@@ -46,14 +59,6 @@ void hexSplitForRoomba(int num, int& a1, int& a2) {
   a2 = (num & 0xFF);
 }
 
-//Not needed. Computer already in twos complement
-//void velconfig(int vel, int& a1, int& a2) {
-//  if (vel < 0) {
-//    vel = vel & 255;
-//  }
-//  hexSplitForRoomba(vel, a1, a2);
-//}
-
 void roombaDrive(int op_code, int lin, int ang) {
   //vel is in mm/s
   //rad positive is left turn(CCW), negative is right(CW)
@@ -66,29 +71,18 @@ void roombaDrive(int op_code, int lin, int ang) {
   int vel = map(lin, -1, 1, -200, 200);
   int rad = map(ang, -1, 1, -200, 200);
 
-  int velright = vel;
-  int velleft = vel;
-//  if ( rad != 0 && lin == 0) { //left CCW R>L
-//    velright += map(ang, -1, 1, -20, 20);
-//    velleft -= map(ang, -1, 1, -20, 20);
-//  }
-//  else if ( rad > 0 && lin != 0 ) {
-//    velright += map(ang, -1, 1, 0, 200);
-//  }
-//  else if ( rad < 0 && lin != 0 ) {
-//    velleft += map(ang, -1, 1, 0, 200);
-//  }
+//  //debug----
+//  debugtwist.linear.x = vel;
+//  debugtwist.angular.z = rad;
+//  twistDebug.publish(&debugtwist);
+//  //debug----
 
-  //debug----
-  debugtwist.linear.x = vel;
-  debugtwist.angular.z = rad;
-  twistDebug.publish(&debugtwist);
-  //debug----
-  
   hexSplitForRoomba(vel, b1, b2);
   hexSplitForRoomba(rad, b3, b4);
 
   if (lin == 0 && rad != 0) {
+    int velright = vel;
+    int velleft = vel;
     op_code = R_DRIVE_DIRECT;
     velright += map(ang, -1, 1, -100, 100);
     velleft -= map(ang, -1, 1, -100, 100);
@@ -103,15 +97,15 @@ void roombaDrive(int op_code, int lin, int ang) {
   //debugWrite(op_code, b1, b2, b3, b4);
 
   roomba.write(op_code);
-  delay(20);
+  delay(delay_time);
   roomba.write(b1);
-  delay(20);
+  delay(delay_time);
   roomba.write(b2);
-  delay(20);
+  delay(delay_time);
   roomba.write(b3);
-  delay(20);
+  delay(delay_time);
   roomba.write(b4);
-  delay(20);
+  delay(delay_time);
 }
 
 //ros::Subscriber<geometry_msgs::Twist> twistsub("/cmd_vel_mux/input/teleop", &twist_CB);
@@ -135,6 +129,8 @@ void setup() { // will be triggered when robot is powered on
   twist_nh.subscribe(twistsub);
   twist_nh.advertise(twistDebug);
   //twist_nh.getHardware()->setBaud(115200);
+  twist_nh.advertise(leftEncoderPub);
+  twist_nh.advertise(rightEncoderPub);
 
   //Serial.println("Initialize complete");
   delay(500);
@@ -149,6 +145,48 @@ void flash() {
   digitalWrite(ledPin, LOW);
   delay(5);
 }
+
+void captureEncoderData(std_msgs::Int32& encod) {
+  highbyte = roomba.read();
+  delay(delay_time);
+  lowbyte = roomba.read();
+  delay(delay_time);
+
+  encod = (highbyte << 0xFF) | lowbyte;
+}
+
+void getEncoderData() {
+  /*signed 16bit number, high byte first. This number will roll 
+  over if it passes the max value at approx 14.5m*/
+  uint16_t highbyte;
+  uint16_t lowbyte;
+  bool done_read_l = 0;
+  bool done_read_r = 0;
+
+  roomba.write(148);
+  delay(delay_time);
+  roomba.write(2);
+  delay(delay_time);
+  roomba.write(left_encoder_packet_ID);
+  delay(delay_time);
+  roomba.write(right_encoder_packet_ID);
+  delay(delay_time);
+
+  /*while packet id != packet, keep reading.
+   * If packet id == packet, store next value
+   */
+  while(done_read_l == 0 && done_read_r == 0) {
+    if (roomba.read() == left_encoder_packet_ID) {
+      delay(delay_time);
+      captureEncoderData(leftEncod);
+    }
+    else if (roomba.read() == right_encoder_packet_ID) {
+      delay(delay_time);
+      captureEncoderData(rightEncod);
+    }
+  }
+}
+
 /*************************************************************
   DEBUG
 *************************************************************/
@@ -187,6 +225,6 @@ void loop() {
   if (fullmode == 1) {
     //spin other nodes here
     twist_nh.spinOnce();
-    delay(20);
+    delay(delay_time);
   }
 }
